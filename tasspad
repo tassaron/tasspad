@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+'''
+Tasspad is a simple notepad/reminder app with a few flexible options
+So you can turn your notes into nags, or executable commands, or tag them
+Designed to sit in a system tray / notification area
+'''
+#=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
+# Copyright (C) 2017 Brianna Rainey
+#
+# Tasspad is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program, in a file named "COPYING".  If not, see
+# <http://www.gnu.org/licenses/>
+#
+#=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
+import gi
+gi.require_version('Gtk', '3.0')
+gi.require_version('AppIndicator3', '0.1')
+from gi.repository import Gtk, AppIndicator3, GObject
+import signal
+import datetime
+import configparser
+import os
+import random
+from string import ascii_letters
+
+#=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
+# Globals
+#
+#=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
+def makeConfigPath():
+    ''' construct path to conf files for ConfigParser '''
+    ConfigPath = os.path.join(os.getenv("HOME"), '.config', 'tasspad')
+    if not os.path.exists(ConfigPath):
+        if not os.path.exists(os.path.join(os.getenv("HOME"), '.config')):
+            os.mkdir(os.path.join(os.getenv("HOME"), '.config'))
+        os.mkdir(ConfigPath)
+    return ConfigPath
+
+def makeSrcPath():
+    ''' construct path for resources (e.g., icons) '''
+    filedir = os.path.dirname(os.path.realpath(__file__))
+    filename = os.path.basename(os.path.realpath(__file__))
+    SrcPath = os.path.join(filedir, '%s-src' % filename)
+    if not os.path.exists(SrcPath):
+        os.mkdir(SrcPath)
+    return SrcPath
+
+ConfigPath = makeConfigPath()
+SrcPath = makeSrcPath()
+
+#=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
+# Classes
+#
+#=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
+class ConfigParser(configparser.ConfigParser):
+    def __init__(self, path, defaults):
+        super().__init__()
+        if not os.path.exists(path):
+            # make a new default file
+            _ = configparser.ConfigParser()
+            for key, value in defaults.items():
+                _[key] = value
+            with open(path, 'w') as f:
+                _.write(f)
+            del _
+        self.read(path)
+
+class ConfFile(ConfigParser):
+    defaults =  {
+                'general' : {
+                            'appname'   : 'Tasspad',
+                            'icon'      : '%s/icon.svg' % SrcPath,
+                            'theme'     : 'default',
+                            },
+                }
+
+    def __init__(self, path=os.path.join(ConfigPath, 'conf.conf')):
+        ConfFile.path = path
+        super().__init__(ConfFile.path, ConfFile.defaults)
+
+class NotesFile(ConfigParser):
+    defaults =  {
+                'DEFAULT' : {
+                            'flags' : 'none',
+                            },
+                'apricot' : {
+                            'title' : 'First note!',
+                            'body'  : 'First note!',
+                            },
+                }
+
+    def __init__(self, path=os.path.join(ConfigPath, 'notes.conf')):
+        NotesFile.path = path
+        super().__init__(NotesFile.path, NotesFile.defaults)
+
+    def save(self):
+        with open(NotesFile.path, 'w') as f:
+            self.write(f)
+        Tray.createMenu()
+
+    def uniqueName(self):
+        while True:
+            pname = "".join([random.choice(ascii_letters) for i in range(20)])
+            if pname not in self.sections():
+                self.add_section(pname)
+                break
+        return pname
+
+    def new(self):
+        window = NewNoteWindow()
+        window.show_all()
+        ch = window.run()
+        if ch == Gtk.ResponseType.APPLY:
+            newname = self.uniqueName()
+            self[newname]['title'] = window.entry.get_text()
+            self[newname]['body'] = window.entry.get_text()
+            self.save()
+        window.destroy()
+
+    def delete(self, notename):
+        self.remove_section(notename)
+        self.save()
+
+class NewNoteWindow(Gtk.Dialog):
+    def __init__(self):
+        super().__init__()
+        self.entry = Gtk.Entry()
+        self.bodyBox = self.get_content_area()
+        self.bodyBox.pack_start(Gtk.Label("New note: "), False, False, 0)
+        self.bodyBox.pack_start(self.entry, False, False, 0)
+        self.add_buttons(Gtk.STOCK_ADD, Gtk.ResponseType.APPLY,
+                        Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL
+        )
+        # TODO: make enter hit Add button
+        # self.entry.set_activates_default(True)
+        # set_can_default(okbutton, true)
+        # set_default(self, okbutton)
+
+class TrayIcon:
+    def __init__(self):
+        self.indicator = AppIndicator3.Indicator.new(
+            Config['general']['appname'], Config['general']['icon'],
+            AppIndicator3.IndicatorCategory.OTHER)
+        self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+        self.createMenu()
+
+    def createMenu(self):
+        self.indicator.set_menu(self.buildMenu())
+
+    def buildMenu(self):
+        menu = Gtk.Menu()
+        newNoteItem = Gtk.MenuItem('New Note')
+        newNoteItem.connect('activate', lambda _: Notes.new())
+        menu.append(newNoteItem)
+        self.noteItems = []
+        # notes
+        for noteName in Notes.sections():
+            if noteName == 'DEFAULT':
+                continue
+            item = Gtk.MenuItem(Notes[noteName]['title'])
+            self.noteItems.insert(0, item)
+            self.noteItems[0].connect(
+                'activate',
+                lambda _, section: Notes.delete(section),
+                noteName
+            )
+            menu.append(self.noteItems[0])
+        # end of menu
+        menuSep = Gtk.SeparatorMenuItem()
+        menu.append(menuSep)
+        quitItem = Gtk.MenuItem('Quit')
+        quitItem.connect('activate', self.stop)
+        menu.append(quitItem)
+        menu.show_all()
+        return menu
+
+    def stop(self, source):
+        Gtk.main_quit()
+
+def currentDateTime():
+    current_time = datetime.datetime.now()
+    return (
+            "%s-%s-%s" % (current_time.year, current_time.month, current_time.day),
+            "%s:%s" % (current_time.hour, current_time.minute)
+            )
+
+# Main
+def main():
+    # start GTK loop
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    Gtk.main()
+
+if __name__ == "__main__":
+    Config = ConfFile()
+    Notes = NotesFile()
+    Tray = TrayIcon()
+    main()
