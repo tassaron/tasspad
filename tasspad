@@ -31,6 +31,8 @@ import datetime
 import configparser
 import os
 import random
+from textwrap import wrap
+from subprocess import call
 from string import ascii_letters
 
 #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
@@ -62,7 +64,7 @@ SrcPath = makeSrcPath()
 # Classes
 #
 #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
-class ConfigParser(configparser.ConfigParser):
+class _ConfigParser(configparser.ConfigParser):
     def __init__(self, path, defaults):
         super().__init__()
         if not os.path.exists(path):
@@ -75,36 +77,43 @@ class ConfigParser(configparser.ConfigParser):
             del _
         self.read(path)
 
-class ConfFile(ConfigParser):
+class ConfParser(_ConfigParser):
     defaults =  {
                 'general' : {
                             'appname'   : 'Tasspad',
                             'icon'      : '%s/icon.svg' % SrcPath,
                             'theme'     : 'default',
+                            'menuwidth' : '29',
+                            'usegroups' : 'false',
                             },
                 }
 
     def __init__(self, path=os.path.join(ConfigPath, 'conf.conf')):
-        ConfFile.path = path
-        super().__init__(ConfFile.path, ConfFile.defaults)
+        ConfParser.path = path
+        super().__init__(ConfParser.path, ConfParser.defaults)
 
-class NotesFile(ConfigParser):
+class NotesParser(_ConfigParser):
     defaults =  {
                 'DEFAULT' : {
-                            'flags' : 'none',
+                            'title' : '',
+                            'body' : '',
+                            'timecreated' : '',
+                            'timemodified' : '',
+                            'group' : 'main',
+                            'tags' : '',
+                            'execute' : 'false',
                             },
                 'apricot' : {
-                            'title' : 'First note!',
-                            'body'  : 'First note!',
+                            'title' : 'Welcome!',
                             },
                 }
 
     def __init__(self, path=os.path.join(ConfigPath, 'notes.conf')):
-        NotesFile.path = path
-        super().__init__(NotesFile.path, NotesFile.defaults)
+        NotesParser.path = path
+        super().__init__(NotesParser.path, NotesParser.defaults)
 
     def save(self):
-        with open(NotesFile.path, 'w') as f:
+        with open(NotesParser.path, 'w') as f:
             self.write(f)
         Tray.createMenu()
 
@@ -118,13 +127,30 @@ class NotesFile(ConfigParser):
 
     def new(self):
         window = NewNoteWindow()
-        window.show_all()
         ch = window.run()
         if ch == Gtk.ResponseType.APPLY:
             newname = self.uniqueName()
             self[newname]['title'] = window.entry.get_text()
-            self[newname]['body'] = window.entry.get_text()
+            self[newname]['timecreated'] = currentTime()
             self.save()
+        window.destroy()
+
+    def edit(self, notename):
+        window = EditWindow(notename)
+        while True:
+            ch = window.run()
+            if ch == Gtk.ResponseType.APPLY:
+                for key, value in self[notename].items():
+                    if key.startswith('time'):
+                        continue
+                    entrytext = window.fields[key].get_text()
+                    if entrytext != self[notename][key]:
+                        self[notename][key] = entrytext
+                self[notename]['timemodified'] = currentTime()
+                self.save()
+                break
+            elif ch == Gtk.ResponseType.CANCEL:
+                break
         window.destroy()
 
     def delete(self, notename):
@@ -133,18 +159,46 @@ class NotesFile(ConfigParser):
 
 class NewNoteWindow(Gtk.Dialog):
     def __init__(self):
-        super().__init__()
+        super().__init__(title=Config['general']['appname'])
+        self.set_icon_from_file(Config['general']['icon'])
+
+        # construct content area
         self.entry = Gtk.Entry()
+        self.entry.set_activates_default(True)
         self.bodyBox = self.get_content_area()
         self.bodyBox.pack_start(Gtk.Label("New note: "), False, False, 0)
         self.bodyBox.pack_start(self.entry, False, False, 0)
-        self.add_buttons(Gtk.STOCK_ADD, Gtk.ResponseType.APPLY,
-                        Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL
-        )
-        # TODO: make enter hit Add button
-        # self.entry.set_activates_default(True)
-        # set_can_default(okbutton, true)
-        # set_default(self, okbutton)
+        # construct action area
+        addButton = self.add_button(Gtk.STOCK_ADD, Gtk.ResponseType.APPLY)
+        self.add_button(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL)
+        # make addButton default button
+        addButton.set_can_default(True)
+        self.set_default(addButton)
+        self.show_all()
+
+class EditWindow(Gtk.Dialog):
+    def __init__(self, notename):
+        super().__init__(title=Config['general']['appname'])
+        self.set_icon_from_file(Config['general']['icon'])
+        box = self.get_content_area()
+        box.set_orientation(Gtk.Orientation.VERTICAL)
+        self.fields = {}
+        for key, value in Notes[notename].items():
+            field = Gtk.Box()
+            field.add(Gtk.Label(key))
+            if key.startswith('time'):
+                label = Gtk.Label(value)
+                field.pack_end(label, False, False, 0)
+            else:
+                entry = Gtk.Entry()
+                entry.set_text(value)
+                field.pack_end(entry, False, False, 0)
+                self.fields[key] = entry
+            box.pack_start(field, False, False, 0)
+        self.add_buttons(Gtk.STOCK_APPLY, Gtk.ResponseType.APPLY,
+                         Gtk.STOCK_CLOSE, Gtk.ResponseType.CANCEL
+                        )
+        self.show_all()
 
 class TrayIcon:
     def __init__(self):
@@ -159,39 +213,96 @@ class TrayIcon:
 
     def buildMenu(self):
         menu = Gtk.Menu()
-        newNoteItem = Gtk.MenuItem('New Note')
+        newNoteItem = Gtk.MenuItem('[New Note]')
         newNoteItem.connect('activate', lambda _: Notes.new())
         menu.append(newNoteItem)
+        if Config.getboolean('general','usegroups'):
+            newGroupItem = Gtk.MenuItem('[New Group]')
+            newGroupItem.connect('activate', lambda _: Notes.new())
+            menu.append(newGroupItem)
         self.noteItems = []
         # notes
         for noteName in Notes.sections():
+            def leftClickAction(noteName):
+                if Notes.getboolean(noteName, 'execute'):
+                    call('(%s &)' % Notes[noteName]['title'], shell=True)
+                else:
+                    Notes.delete(noteName)
             if noteName == 'DEFAULT':
                 continue
-            item = Gtk.MenuItem(Notes[noteName]['title'])
+            # make a primary menu item for this note...
+            titlelines = wrap(Notes[noteName]['title'],
+                              int(Config['general']['menuwidth']))
+            item = Gtk.MenuItem("\n".join(line for line in titlelines))
             self.noteItems.insert(0, item)
-            self.noteItems[0].connect(
-                'activate',
-                lambda _, section: Notes.delete(section),
-                noteName
-            )
+
+            if Notes[noteName]['body']:
+                # make a submenu for the note's body...
+                submenu = Gtk.Menu()
+                removeButton = Gtk.MenuItem('Remove')
+                editButton = Gtk.MenuItem('Edit')
+                removeButton.connect(
+                    'activate',
+                    lambda _, section: leftClickAction(section),
+                    noteName
+                )
+                editButton.connect(
+                    'activate',
+                    lambda _, section: Notes.edit(section),
+                    noteName
+                )
+
+                lines = wrap(Notes[noteName]['body'],
+                             int(Config['general']['menuwidth']))
+                for line in lines:
+                    submenu.append(Gtk.MenuItem(line))
+                sep = Gtk.SeparatorMenuItem()
+                submenu.append(sep)
+                submenu.append(removeButton)
+                submenu.append(editButton)
+                self.noteItems[0].set_submenu(submenu)
+            else:
+                # hide submenu, bind left and right click to edit and delete
+                self.noteItems[0].connect(
+                    'button-press-event',
+                    lambda _, k, section: \
+                        leftClickAction(section) if k.button == 1 \
+                        else Notes.edit(section),
+                    noteName
+                )
+            # add mainmenu item to mainmenu
             menu.append(self.noteItems[0])
         # end of menu
         menuSep = Gtk.SeparatorMenuItem()
         menu.append(menuSep)
+        prefsItem = Gtk.MenuItem('Preferences')
+        prefsItem.connect('activate', lambda _: self.setPrefs())
+        menu.append(prefsItem)
         quitItem = Gtk.MenuItem('Quit')
-        quitItem.connect('activate', self.stop)
+        quitItem.connect('activate', lambda _: self.stop())
         menu.append(quitItem)
         menu.show_all()
         return menu
 
-    def stop(self, source):
+    def setPrefs(self):
+        pass
+
+    def stop(self):
         Gtk.main_quit()
 
-def currentDateTime():
+
+#=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
+# Functions
+#
+#=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
+def currentTime():
     current_time = datetime.datetime.now()
     return (
-            "%s-%s-%s" % (current_time.year, current_time.month, current_time.day),
-            "%s:%s" % (current_time.hour, current_time.minute)
+            "%s-%s-%s %s:%s" % (current_time.year,
+                                current_time.month,
+                                current_time.day,
+                                current_time.hour,
+                                current_time.minute)
             )
 
 # Main
@@ -201,7 +312,7 @@ def main():
     Gtk.main()
 
 if __name__ == "__main__":
-    Config = ConfFile()
-    Notes = NotesFile()
+    Config = ConfParser()
+    Notes = NotesParser()
     Tray = TrayIcon()
     main()
