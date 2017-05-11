@@ -91,7 +91,10 @@ class _ConfigParser(configparser.ConfigParser):
         with open(self.path, 'w') as f:
             self.write(f)
         if Tray:
-            Tray.createMenu()
+            try:
+                Tray.createMenu()
+            except AttributeError as e:
+                print("Error creating Tray Icon, but file saved OK\n%s" % e)
 
 
 class ConfParser(_ConfigParser):
@@ -324,7 +327,11 @@ class TrayIcon:
 
     def buildMenu(self):
         menu = Gtk.Menu()
-        newNoteItem = Gtk.MenuItem('[New Note]')
+        # NEW NOTE BUTTON
+        newNoteItem = Gtk.ImageMenuItem('[New Note]')
+        img = Gtk.Image()
+        img.set_from_stock(Gtk.STOCK_NEW,1)
+        newNoteItem.set_image(img)
         newNoteItem.connect('activate', lambda _: Notes.new())
         menu.append(newNoteItem)
         if Config.getboolean('general','_bool_show_groups'):
@@ -332,7 +339,7 @@ class TrayIcon:
             newGroupItem.connect('activate', lambda _: Notes.new())
             menu.append(newGroupItem)
         self.noteItems = []
-        # notes
+        # LIST OF NOTES
         for noteName in Notes.sections():
             def leftClickAction(noteName):
                 if Notes.getboolean(noteName, '_bool_execute'):
@@ -344,7 +351,19 @@ class TrayIcon:
             # make a primary menu item for this note...
             titlelines = wrap(Notes[noteName]['title'],
                               int(Config['general']['_num_menu_width']))
-            item = Gtk.MenuItem("\n".join(line for line in titlelines))
+            if Notes[noteName]['icon']:
+                item = Gtk.ImageMenuItem("\n".join(line for line in titlelines))
+                image = Gtk.Image()
+                image.set_from_file(Notes[noteName]['icon'])
+                item.set_image(image)
+            else:
+                if Notes.getboolean(noteName, '_bool_execute'):
+                    item = Gtk.ImageMenuItem("\n".join(line for line in titlelines))
+                    img = Gtk.Image()
+                    img.set_from_stock(Gtk.STOCK_EXECUTE,1)
+                    item.set_image(img)
+                else:
+                    item = Gtk.MenuItem("\n".join(line for line in titlelines))
             self.noteItems.insert(0, item)
 
             if Notes[noteName]['body']:
@@ -383,13 +402,17 @@ class TrayIcon:
                 )
             # add mainmenu item to mainmenu
             menu.append(self.noteItems[0])
-        # end of menu
+        # END OF MENU
         menuSep = Gtk.SeparatorMenuItem()
         menu.append(menuSep)
-        prefsItem = Gtk.MenuItem('Preferences')
+        prefsItem = Gtk.ImageMenuItem('Preferences')
+        img = Gtk.Image(); img.set_from_stock(Gtk.STOCK_PREFERENCES,1)
+        prefsItem.set_image(img)
         prefsItem.connect('activate', lambda _: self.editPrefs())
         menu.append(prefsItem)
-        quitItem = Gtk.MenuItem('Quit')
+        quitItem = Gtk.ImageMenuItem('Quit')
+        img = Gtk.Image(); img.set_from_stock(Gtk.STOCK_CLOSE,1)
+        quitItem.set_image(img)
         quitItem.connect('activate', lambda _: self.stop())
         menu.append(quitItem)
         menu.show_all()
@@ -466,5 +489,8 @@ def main():
 if __name__ == "__main__":
     Config = ConfParser()
     Notes = NotesParser()
-    Tray = TrayIcon()
+    try:
+        Tray = TrayIcon()
+    except AttributeError as e:
+        print("Error creating Tray Icon\n%s" % e); quit(1)
     main()
