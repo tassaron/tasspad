@@ -59,16 +59,20 @@ def makeSrcPath():
 
 ConfigPath = makeConfigPath()
 SrcPath = makeSrcPath()
+Tray = None
+
 
 #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
-# Classes
+# Parsers
 #
 #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
 class _ConfigParser(configparser.ConfigParser):
     def __init__(self, path, defaults):
         super().__init__()
+        self.path = path
+        # make a new default file if none exists
         if not os.path.exists(path):
-            # make a new default file
+
             _ = configparser.ConfigParser()
             for key, value in defaults.items():
                 _[key] = value
@@ -77,45 +81,55 @@ class _ConfigParser(configparser.ConfigParser):
             del _
         self.read(path)
 
-class ConfParser(_ConfigParser):
-    defaults =  {
-                'general' : {
-                            'appname'   : 'Tasspad',
-                            'icon'      : '%s/icon.svg' % SrcPath,
-                            'theme'     : 'default',
-                            'menuwidth' : '29',
-                            'usegroups' : 'false',
-                            },
-                }
+    def save(self):
+        with open(self.path, 'w') as f:
+            self.write(f)
+        if Tray:
+            Tray.createMenu()
 
+
+class ConfParser(_ConfigParser):
     def __init__(self, path=os.path.join(ConfigPath, 'conf.conf')):
-        ConfParser.path = path
-        super().__init__(ConfParser.path, ConfParser.defaults)
+        defaults =  {
+            'general' : {
+                        'appname'   : 'Tasspad',
+                        'icon'      : '%s/icon.svg' % SrcPath,
+                        '_bool_usesystemicon' : 'true',
+                        'theme'     : 'default',
+                        'menuwidth' : '29',
+                        '_bool_usegroups' : 'false',
+                        '_bool_confirmdelete' : 'true',
+                        },
+            }
+        super().__init__(path, defaults)
+
+        # if default keys are not in the file, fix it
+        # it's probably something added in a later version
+        for section, content in defaults.items():
+            for key, value in content.items():
+                if key in self[section]:
+                    continue
+                self[section][key] = value
+                self.save()
 
 class NotesParser(_ConfigParser):
-    defaults =  {
-                'DEFAULT' : {
-                            'title' : '',
-                            'body' : '',
-                            'timecreated' : '',
-                            'timemodified' : '',
-                            'group' : 'main',
-                            'tags' : '',
-                            'execute' : 'false',
-                            },
-                'apricot' : {
-                            'title' : 'Welcome!',
-                            },
-                }
-
     def __init__(self, path=os.path.join(ConfigPath, 'notes.conf')):
-        NotesParser.path = path
-        super().__init__(NotesParser.path, NotesParser.defaults)
-
-    def save(self):
-        with open(NotesParser.path, 'w') as f:
-            self.write(f)
-        Tray.createMenu()
+        defaults =  {
+            'DEFAULT' : {
+                        'title' : '',
+                        'body' : '',
+                        '_nomodify_timecreated' : '',
+                        '_nomodify_timemodified' : '',
+                        'group' : 'main',
+                        'tags' : '',
+                        '_bool_execute' : 'false',
+                        },
+            'apricot' : {
+                        'title' : 'Welcome!',
+                        '_nomodify_timecreated' : currentTime(),
+                        },
+            }
+        super().__init__(path, defaults)
 
     def uniqueName(self):
         while True:
@@ -131,12 +145,12 @@ class NotesParser(_ConfigParser):
         if ch == Gtk.ResponseType.APPLY:
             newname = self.uniqueName()
             self[newname]['title'] = window.entry.get_text()
-            self[newname]['timecreated'] = currentTime()
+            self[newname]['_nomodify_timecreated'] = currentTime()
             self.save()
         window.destroy()
 
     def edit(self, notename):
-        window = EditWindow(notename)
+        window = EditWindow(self[notename])
         while True:
             ch = window.run()
             if ch == Gtk.ResponseType.APPLY:
@@ -146,7 +160,7 @@ class NotesParser(_ConfigParser):
                     entrytext = window.fields[key].get_text()
                     if entrytext != self[notename][key]:
                         self[notename][key] = entrytext
-                self[notename]['timemodified'] = currentTime()
+                self[notename]['_nomodify_timemodified'] = currentTime()
                 self.save()
                 break
             elif ch == Gtk.ResponseType.CANCEL:
@@ -154,13 +168,39 @@ class NotesParser(_ConfigParser):
         window.destroy()
 
     def delete(self, notename):
-        self.remove_section(notename)
-        self.save()
+        def do():
+            self.remove_section(notename)
+            self.save()
+        confirmdelete = Config.getboolean('general', '_bool_confirmdelete')
+        if confirmdelete:
+            title = self[notename]['title']
+            if len(self[notename]['title']) > 29:
+                title = "%s..." % self[notename]['title'][:30]
+            window = BooleanWindow('delete', '"%s"' % title)
+            ch = window.run()
+            if ch == Gtk.ResponseType.OK:
+                do()
+            window.destroy()
+        else:
+            do()
 
-class NewNoteWindow(Gtk.Dialog):
+
+#=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
+# Dialogs
+#
+#=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
+class _Dialog(Gtk.Dialog):
     def __init__(self):
         super().__init__(title=Config['general']['appname'])
-        self.set_icon_from_file(Config['general']['icon'])
+        if Config.getboolean('general', '_bool_usesystemicon'):
+            self.set_icon_name('text-editor')
+        else:
+            self.set_icon_from_file(Config['general']['icon'])
+        self.set_border_width(8)
+
+class NewNoteWindow(_Dialog):
+    def __init__(self):
+        super().__init__()
 
         # construct content area
         self.entry = Gtk.Entry()
@@ -176,35 +216,89 @@ class NewNoteWindow(Gtk.Dialog):
         self.set_default(addButton)
         self.show_all()
 
-class EditWindow(Gtk.Dialog):
-    def __init__(self, notename):
-        super().__init__(title=Config['general']['appname'])
-        self.set_icon_from_file(Config['general']['icon'])
+class EditWindow(_Dialog):
+    def __init__(self, section):
+        super().__init__()
+
         box = self.get_content_area()
         box.set_orientation(Gtk.Orientation.VERTICAL)
         self.fields = {}
-        for key, value in Notes[notename].items():
+        self.checkboxes = {}
+        for key, value in section.items():
             field = Gtk.Box()
-            field.add(Gtk.Label(key))
-            if key.startswith('time'):
-                label = Gtk.Label(value)
-                field.pack_end(label, False, False, 0)
+            if key.startswith('_'):
+                # remove underscored prefix from keyname
+                prefixlen = key[1:].index('_') + 2
+                newkey = key[prefixlen:]
+                field.add(Gtk.Label(newkey))
+                # change how value is edited based on prefix
+                if key.startswith('_nomodify_'):
+                    field.pack_end(Gtk.Label(value), False, False, 0)
+                elif key.startswith('_bool_'):
+                    check = Gtk.CheckButton()
+                    if value in ('true', 'yes'):
+                        check.set_active(True)
+                    field.pack_end(check, False, False, 0)
+                    self.checkboxes[key] = check
+                else:
+                    print('Illegal keyname in ', section); quit(1)
             else:
+                field.add(Gtk.Label(key))
                 entry = Gtk.Entry()
                 entry.set_text(value)
                 field.pack_end(entry, False, False, 0)
                 self.fields[key] = entry
             box.pack_start(field, False, False, 0)
         self.add_buttons(Gtk.STOCK_APPLY, Gtk.ResponseType.APPLY,
-                         Gtk.STOCK_CLOSE, Gtk.ResponseType.CANCEL
-                        )
+                         Gtk.STOCK_CLOSE, Gtk.ResponseType.CANCEL)
         self.show_all()
 
+class PrefsWindow(_Dialog):
+    def __init__(self):
+        super().__init__()
+
+class BooleanWindow(_Dialog):
+    def __init__(self, action, thing):
+        super().__init__()
+        label = "Really %s %s?" % (action, thing)
+
+        # construct content area
+        self.bodyBox = self.get_content_area()
+        self.bodyBox.pack_start(Gtk.Label(label), False, False, 0)
+        # construct action area
+        yesButton = self.add_button(Gtk.STOCK_YES, Gtk.ResponseType.OK)
+        self.add_button(Gtk.STOCK_NO, Gtk.ResponseType.CANCEL)
+        # make yesButton default button
+        yesButton.set_can_default(True)
+        #yesButton.set_activates_default(True)
+        self.set_default(yesButton)
+        self.show_all()
+
+class MessageWindow(_Dialog):
+    def __init__(self, text):
+        super().__init__()
+        self.bodyBox = self.get_content_area()
+        self.bodyBox.pack_start(Gtk.Label(str(text)), False, False, 0)
+        self.add_button(Gtk.STOCK_OK, Gtk.ResponseType.OK)
+        self.show_all()
+        self.run()
+        self.destroy()
+
+#=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
+# Greebles
+#
+#=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
 class TrayIcon:
     def __init__(self):
-        self.indicator = AppIndicator3.Indicator.new(
-            Config['general']['appname'], Config['general']['icon'],
-            AppIndicator3.IndicatorCategory.OTHER)
+        if Config.getboolean('general', '_bool_usesystemicon'):
+            # Use the system icon instead of a custom path
+            self.indicator = AppIndicator3.Indicator.new(
+                Config['general']['appname'], 'text-editor',
+                AppIndicator3.IndicatorCategory.OTHER)
+        else:
+            self.indicator = AppIndicator3.Indicator.new(
+                Config['general']['appname'], Config['general']['icon'],
+                AppIndicator3.IndicatorCategory.OTHER)
         self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
         self.createMenu()
 
@@ -216,7 +310,7 @@ class TrayIcon:
         newNoteItem = Gtk.MenuItem('[New Note]')
         newNoteItem.connect('activate', lambda _: Notes.new())
         menu.append(newNoteItem)
-        if Config.getboolean('general','usegroups'):
+        if Config.getboolean('general','_bool_usegroups'):
             newGroupItem = Gtk.MenuItem('[New Group]')
             newGroupItem.connect('activate', lambda _: Notes.new())
             menu.append(newGroupItem)
@@ -224,7 +318,7 @@ class TrayIcon:
         # notes
         for noteName in Notes.sections():
             def leftClickAction(noteName):
-                if Notes.getboolean(noteName, 'execute'):
+                if Notes.getboolean(noteName, '_bool_execute'):
                     call('(%s &)' % Notes[noteName]['title'], shell=True)
                 else:
                     Notes.delete(noteName)
@@ -276,7 +370,7 @@ class TrayIcon:
         menuSep = Gtk.SeparatorMenuItem()
         menu.append(menuSep)
         prefsItem = Gtk.MenuItem('Preferences')
-        prefsItem.connect('activate', lambda _: self.setPrefs())
+        prefsItem.connect('activate', lambda _: self.editPrefs())
         menu.append(prefsItem)
         quitItem = Gtk.MenuItem('Quit')
         quitItem.connect('activate', lambda _: self.stop())
@@ -284,8 +378,31 @@ class TrayIcon:
         menu.show_all()
         return menu
 
-    def setPrefs(self):
-        pass
+    def editPrefs(self):
+        window = EditWindow(Config['general'])
+        ch = window.run()
+        if ch == Gtk.ResponseType.APPLY:
+            for key in Config['general']:
+                edited = False
+                if key in window.fields:
+                    entrytext = window.fields[key].get_text()
+                    if entrytext != Config['general'][key]:
+                        edited = True
+                        Config['general'][key] = entrytext
+                elif key in window.checkboxes:
+                    state  = window.checkboxes[key].get_active()
+                    if state != Config.getboolean('general', key):
+                        edited = True
+                    if state:
+                        Config['general'][key] = 'true'
+                    else:
+                        Config['general'][key] = 'false'
+                if edited and 'icon' in key:
+                    MessageWindow("%s must be restarted for icon changes to take effect" %\
+                        Config['general']['appname'])
+            Config.save()
+
+        window.destroy()
 
     def stop(self):
         Gtk.main_quit()
