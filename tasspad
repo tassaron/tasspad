@@ -22,6 +22,8 @@ Designed to sit in a system tray / notification area
 # <http://www.gnu.org/licenses/>
 #
 #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
+# FIX: make quit button send signal to close all windows
+
 import gi
 gi.require_version('Gtk', '3.0')
 gi.require_version('AppIndicator3', '0.1')
@@ -34,6 +36,7 @@ import random
 from textwrap import wrap
 from subprocess import call
 from string import ascii_letters
+
 
 #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
 # Globals
@@ -61,12 +64,6 @@ ConfigPath = makeConfigPath()
 SrcPath = makeSrcPath()
 Tray = None
 
-Soundboard = {
-    'ExecuteWarning' : '''
-The execute flag will cause this note to run the <b>body</b>
-field as a shell command when the note is clicked. This can
-easily cause problems if used incorrectly.''',
-}
 
 #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
 # Parsers
@@ -109,7 +106,25 @@ class ConfParser(_ConfigParser):
                         '_bool_apply/close_swap' : 'false',
                         '_bool_show_groups' : 'false',
                         '_bool_confirm_delete' : 'true',
+                        '_bool_confirm_execute' : 'false',
+                        '_bool_warn_when_editing' : 'true',
                         },
+            'soundboard' : {
+                        'NewNote' : '[New Note]',
+                        'NewGroup' : '[New Group]',
+                        'Preferences' : 'Preferences',
+                        'Quit' : 'Quit',
+                        'ExecuteWarning' : \
+'''The execute flag will cause this note to run the <b>body</b>
+field as a shell command when the note is clicked. This can
+easily cause problems if used incorrectly.''',
+                        'WelcomeMessage' : \
+'''Left click will delete notes by default, right-click will
+bring up the edit window. From here the note can be
+complicated with tweaks.''',
+                        'IconWarning' : \
+'''must be restarted for icon changes to take effect.''',
+                    }
             }
         super().__init__(path, defaults)
 
@@ -124,6 +139,12 @@ class ConfParser(_ConfigParser):
 
 class NotesParser(_ConfigParser):
     def __init__(self, path=os.path.join(ConfigPath, 'notes.conf')):
+        if call("which zenity > /dev/null", shell=True) == 0:
+            welcomeExecute = 'true'
+            welcomeMessage = 'zenity --info --text="%s"' % Soundboard['WelcomeMessage']
+        else:
+            welcomeExecute = 'false'
+            welcomeMessage = Soundboard['WelcomeMessage']
         defaults =  {
             'DEFAULT' : {
                         'title' : '',
@@ -137,6 +158,8 @@ class NotesParser(_ConfigParser):
                         },
             'apricot' : {
                         'title' : 'Welcome!',
+                        'body' : welcomeMessage,
+                        '_bool_execute' : welcomeExecute,
                         '_nomodify_time_created' : currentTime(),
                         },
             }
@@ -179,8 +202,10 @@ class NotesParser(_ConfigParser):
                         self[notename][key] = 'true'
                     else:
                         self[notename][key] = 'false'
-                if edited and key == '_bool_execute':
-                    MessageWindow(Soundboard['ExecuteWarning'])
+                # gives any warnings as necessary
+                if Config.getboolean('general', '_bool_warn_when_editing'):
+                    if edited and key == '_bool_execute':
+                        MessageWindow(Soundboard['ExecuteWarning'])
             self[notename]['_nomodify_time_modified'] = currentTime()
             self.save()
         window.destroy()
@@ -328,14 +353,16 @@ class TrayIcon:
     def buildMenu(self):
         menu = Gtk.Menu()
         # NEW NOTE BUTTON
-        newNoteItem = Gtk.ImageMenuItem('[New Note]')
+        newNoteItem = Gtk.ImageMenuItem(Soundboard['NewNote'])
         img = Gtk.Image()
         img.set_from_stock(Gtk.STOCK_NEW,1)
         newNoteItem.set_image(img)
         newNoteItem.connect('activate', lambda _: Notes.new())
         menu.append(newNoteItem)
         if Config.getboolean('general','_bool_show_groups'):
-            newGroupItem = Gtk.MenuItem('[New Group]')
+            newGroupItem = Gtk.ImageMenuItem(Soundboard['NewGroup'])
+            img = Gtk.Image(); img.set_from_stock(Gtk.STOCK_INDEX, 1)
+            newGroupItem.set_image(img)
             newGroupItem.connect('activate', lambda _: Notes.new())
             menu.append(newGroupItem)
         self.noteItems = []
@@ -343,7 +370,17 @@ class TrayIcon:
         for noteName in Notes.sections():
             def leftClickAction(noteName):
                 if Notes.getboolean(noteName, '_bool_execute'):
-                    call('(%s &)' % Notes[noteName]['body'], shell=True)
+                    def do():
+                        call('(%s &)' % Notes[noteName]['body'], shell=True)
+                    confirmExecute = Config.getboolean('general', '_bool_confirm_execute')
+                    if confirmExecute:
+                        window = BooleanWindow('execute', '"%s"' % Notes[noteName]['body'])
+                        ch = window.run()
+                        if ch == Gtk.ResponseType.OK:
+                            do()
+                        window.destroy()
+                    else:
+                        do()
                 else:
                     Notes.delete(noteName)
             if noteName == 'DEFAULT':
@@ -366,7 +403,7 @@ class TrayIcon:
                     item = Gtk.MenuItem("\n".join(line for line in titlelines))
             self.noteItems.insert(0, item)
 
-            if Notes[noteName]['body']:
+            if Notes[noteName]['body'] and not Notes.getboolean(noteName, '_bool_execute'):
                 # make a submenu for the note's body...
                 submenu = Gtk.Menu()
                 removeButton = Gtk.MenuItem('Remove')
@@ -392,9 +429,9 @@ class TrayIcon:
                 submenu.append(editButton)
                 self.noteItems[0].set_submenu(submenu)
             else:
-                # hide submenu, bind left and right click to edit and delete
+                # hide submenu, bind left and right click appropriate actions
                 self.noteItems[0].connect(
-                    'button-press-event',
+                    'button-release-event',
                     lambda _, k, section: \
                         leftClickAction(section) if k.button == 1 \
                         else Notes.edit(section),
@@ -405,12 +442,12 @@ class TrayIcon:
         # END OF MENU
         menuSep = Gtk.SeparatorMenuItem()
         menu.append(menuSep)
-        prefsItem = Gtk.ImageMenuItem('Preferences')
+        prefsItem = Gtk.ImageMenuItem(Soundboard['Preferences'])
         img = Gtk.Image(); img.set_from_stock(Gtk.STOCK_PREFERENCES,1)
         prefsItem.set_image(img)
         prefsItem.connect('activate', lambda _: self.editPrefs())
         menu.append(prefsItem)
-        quitItem = Gtk.ImageMenuItem('Quit')
+        quitItem = Gtk.ImageMenuItem(Soundboard['Quit'])
         img = Gtk.Image(); img.set_from_stock(Gtk.STOCK_CLOSE,1)
         quitItem.set_image(img)
         quitItem.connect('activate', lambda _: self.stop())
@@ -437,9 +474,14 @@ class TrayIcon:
                         Config['general'][key] = 'true'
                     else:
                         Config['general'][key] = 'false'
-                if edited and 'icon' in key:
-                    MessageWindow("%s must be restarted for icon changes to take effect" %\
-                        Config['general']['app_name'])
+                # gives any warnings as necessary
+                if Config.getboolean('general', '_bool_warn_when_editing'):
+                    if edited and 'icon' in key:
+                        MessageWindow("%s %s" % (\
+                            Config['general']['app_name'],
+                            Soundboard['IconWarning']
+                            )
+                        )
             Config.save()
 
         window.destroy()
@@ -488,6 +530,7 @@ def main():
 
 if __name__ == "__main__":
     Config = ConfParser()
+    Soundboard = Config['soundboard']
     Notes = NotesParser()
     try:
         Tray = TrayIcon()
