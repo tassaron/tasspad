@@ -108,12 +108,15 @@ class ConfParser(_ConfigParser):
                         '_bool_confirm_delete' : 'true',
                         '_bool_confirm_execute' : 'false',
                         '_bool_warn_when_editing' : 'true',
+                        '_bool_click_submenus' : 'true',
                         },
             'soundboard' : {
                         'NewNote' : '[New Note]',
                         'NewGroup' : '[New Group]',
                         'Preferences' : 'Preferences',
                         'Quit' : 'Quit',
+                        'Remove' : 'Remove',
+                        'Edit' : 'Edit',
                         'ExecuteWarning' : \
 '''The execute flag will cause this note to run the <b>body</b>
 field as a shell command when the note is clicked. This can
@@ -383,6 +386,10 @@ class TrayIcon:
                         do()
                 else:
                     Notes.delete(noteName)
+
+            def rightClickAction(noteName):
+                Notes.edit(noteName)
+
             if noteName == 'DEFAULT':
                 continue
             # make a primary menu item for this note...
@@ -406,13 +413,13 @@ class TrayIcon:
             if Notes[noteName]['body'] and not Notes.getboolean(noteName, '_bool_execute'):
                 # make a submenu for the note's body...
                 submenu = Gtk.Menu()
-                removeButton = Gtk.MenuItem('Remove')
-                editButton = Gtk.MenuItem('Edit')
+                removeButton = Gtk.MenuItem(Soundboard['Remove'])
                 removeButton.connect(
                     'activate',
                     lambda _, section: leftClickAction(section),
                     noteName
                 )
+                editButton = Gtk.MenuItem(Soundboard['Edit'])
                 editButton.connect(
                     'activate',
                     lambda _, section: Notes.edit(section),
@@ -428,13 +435,24 @@ class TrayIcon:
                 submenu.append(removeButton)
                 submenu.append(editButton)
                 self.noteItems[0].set_submenu(submenu)
+                event = 'button-press-event'
             else:
-                # hide submenu, bind left and right click appropriate actions
+                submenu = False
+                event = 'button-release-event'
+            if submenu and Config.getboolean('general', '_bool_click_submenus')\
+                or not submenu:
+                # bind left and right click to appropriate actions
                 self.noteItems[0].connect(
-                    'button-release-event',
+                    event,
                     lambda _, k, section: \
                         leftClickAction(section) if k.button == 1 \
-                        else Notes.edit(section),
+                        else rightClickAction(section),
+                    noteName
+                )
+            if not submenu:
+                self.noteItems[0].connect(
+                    'activate',
+                    lambda _, section: leftClickAction(section),
                     noteName
                 )
             # add mainmenu item to mainmenu
