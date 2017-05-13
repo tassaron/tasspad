@@ -461,8 +461,8 @@ class TrayIcon:
                 if Config.getboolean('general', '_bool_confirm_execute'):
                     window = BooleanWindow(Soundboard['Execute'], '"%s"' % Notes[noteName]['body'])
                     ch = window.run()
+                    window.destroy()
                     if ch == Gtk.ResponseType.CANCEL:
-                        window.destroy()
                         return
                 call('(%s &)' % Notes[noteName]['body'], shell=True)
             else:
