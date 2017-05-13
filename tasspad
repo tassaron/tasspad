@@ -46,9 +46,15 @@ from string import ascii_letters
 #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
 def makeConfigPath():
     ''' construct path to conf files for ConfigParser '''
-    ConfigPath = os.path.join(os.getenv("HOME"), '.config', 'tasspad')
+    dotconfigpath = os.getenv("XDG_CONFIG_HOME")
+    if dotconfigpath:
+        ConfigPath = os.path.join(dotconfigpath, 'tasspad')
+    else:
+        # use fallback path which XDG_CONFIG_HOME is normally set to
+        ConfigPath = os.path.join(os.getenv("HOME"), '.config', 'tasspad')
     if not os.path.exists(ConfigPath):
-        if not os.path.exists(os.path.join(os.getenv("HOME"), '.config')):
+        if not dotconfigpath \
+            and not os.path.exists(os.path.join(os.getenv("HOME"), '.config')):
             os.mkdir(os.path.join(os.getenv("HOME"), '.config'))
         os.mkdir(ConfigPath)
     return ConfigPath
@@ -89,10 +95,10 @@ class _ConfigParser(configparser.ConfigParser):
         with open(self.path, 'w') as f:
             self.write(f)
         if Tray:
-            #try:
-            Tray.createMenu()
-            #except AttributeError as e:
-            #    print("Error creating Tray Icon, but file saved OK\n%s" % e)
+            try:
+                Tray.createMenu()
+            except AttributeError:
+                minorError()
 
 
 class ConfParser(_ConfigParser):
@@ -107,6 +113,7 @@ class ConfParser(_ConfigParser):
                         '_bool_apply/close_swap' : 'false',
                         '_bool_show_groups' : 'false',
                         '_bool_confirm_delete' : 'true',
+                        '_bool_confirm_quit' : 'false',
                         '_bool_confirm_execute' : 'false',
                         '_bool_warn_when_editing' : 'true',
                         '_bool_click_submenus' : 'true',
@@ -117,11 +124,14 @@ class ConfParser(_ConfigParser):
                         'NewGroup' : '[New Group]',
                         'NewGroupLong' : 'New group: ',
                         'EditGroup' : 'Edit Group',
-                        'RemoveGroup' : 'Remove Group',
                         'Preferences' : 'Preferences',
                         'Quit' : 'Quit',
-                        'Remove' : 'Remove',
                         'Edit' : 'Edit',
+                        'BooleanPrompt' : 'Really',
+                        'OutsideGroupHeader' : 'Other Notes',
+                        'InsideGroupHeader' : 'Notes In This Group',
+                        'MinorError' : \
+'Oh no! Couldn\'t create Tray Icon, but file saved OK.',
                         'ExecuteWarning' : \
 '''The execute flag will cause this note to run the <b>body</b>
 field as a shell command when the note is clicked. This can
@@ -225,10 +235,16 @@ class NotesParser(_ConfigParser):
                         self[notename][key] = 'false'
                 # gives any warnings as necessary
                 if Config.getboolean('general', '_bool_warn_when_editing'):
-                    if edited and key == '_bool_execute':
+                    if edited and key == '_bool_execute' \
+                        and self.getboolean(notename, '_bool_execute'):
                         MessageWindow(Soundboard['ExecuteWarning'])
             self[notename]['_nomodify_time_modified'] = currentTime()
             self.save()
+        window.destroy()
+
+    def editGroup(self, groupname):
+        window = EditGroupWindow(groupname)
+        window.run()
         window.destroy()
 
     def registerGroups(self):
@@ -275,6 +291,14 @@ class _Dialog(Gtk.Dialog):
             self.set_icon_from_file(Config['general']['icon'])
         self.set_border_width(8)
 
+    def addApplyButtons(self):
+        if Config.getboolean('general','_bool_apply/close_swap'):
+            self.add_buttons(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE,
+                             Gtk.STOCK_APPLY, Gtk.ResponseType.APPLY)
+        else:
+            self.add_buttons(Gtk.STOCK_APPLY, Gtk.ResponseType.APPLY,
+                             Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+
 class NewNoteWindow(_Dialog):
     def __init__(self, text):
         super().__init__()
@@ -296,6 +320,54 @@ class NewNoteWindow(_Dialog):
         addButton.set_can_default(True)
         self.set_default(addButton)
         self.show_all()
+
+class EditGroupWindow(_Dialog):
+    def __init__(self, section):
+        super().__init__()
+        self.section = section
+        box = self.get_content_area()
+        # make headers
+        headerBox = Gtk.Box()
+        box.pack_start(headerBox, False, False, 0)
+        outsiderHeader = Gtk.Label()
+        outsiderHeader.set_markup('<b>%s</b>' % Soundboard['OutsideGroupHeader'])
+        insiderHeader = Gtk.Label()
+        insiderHeader.set_markup('<b>%s</b>' % Soundboard['InsideGroupHeader'])
+        headerBox.pack_start(outsiderHeader, False, False, 8)
+        headerBox.pack_end(insiderHeader, False, False, 8)
+        # make body
+        bodyBox = Gtk.Box()
+        box.pack_start(bodyBox, False, False, 0)
+        self.outsiders = notMembersOfGroup(section)
+        self.insiders = membersOfGroup(section)
+        self.makeListBoxes()
+        # make action buttons
+        betweenBox = Gtk.Box()
+        betweenBox.set_orientation(Gtk.Orientation.VERTICAL)
+        inToOutButton = Gtk.Button("<")
+        outToInButton = Gtk.Button(">")
+        betweenBox.pack_start(inToOutButton, True, True, 20)
+        betweenBox.pack_start(outToInButton, True, True, 20)
+        # put it all together
+        bodyBox.pack_start(self.outsiderBox, True, False, 10)
+        bodyBox.pack_start(betweenBox, True, False, 4)
+        bodyBox.pack_start(self.insiderBox, True, False, 10)
+        self.addApplyButtons()
+        self.show_all()
+
+    def makeListBoxes(self):
+        # list of notes outside this group...
+        self.outsiderBox = Gtk.ListBox()
+        for notename in self.outsiders:
+            row = Gtk.ListBoxRow()
+            row.add(Gtk.Label(Notes[notename]['title']))
+            self.outsiderBox.add(row)
+        # list of notes in this group
+        self.insiderBox = Gtk.ListBox()
+        for notename in self.insiders:
+            row = Gtk.ListBoxRow()
+            row.add(Gtk.Label(Notes[notename]['title']))
+            self.insiderBox.add(row)
 
 class EditWindow(_Dialog):
     def __init__(self, section, showDelete=False):
@@ -326,20 +398,16 @@ class EditWindow(_Dialog):
                 field.pack_end(entry, False, False, 0)
                 self.fields[key] = entry
             box.pack_start(field, False, False, 0)
+
         if showDelete:
             self.add_button(Gtk.STOCK_DELETE, Gtk.ResponseType.CANCEL)
-        if Config.getboolean('general','_bool_apply/close_swap'):
-            self.add_buttons(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE,
-                             Gtk.STOCK_APPLY, Gtk.ResponseType.APPLY)
-        else:
-            self.add_buttons(Gtk.STOCK_APPLY, Gtk.ResponseType.APPLY,
-                             Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+        self.addApplyButtons()
         self.show_all()
 
 class BooleanWindow(_Dialog):
     def __init__(self, action, thing):
         super().__init__()
-        label = "Really %s %s?" % (action, thing)
+        label = "%s %s %s?" % (Soundboard['BooleanPrompt'], action, thing)
 
         # construct content area
         self.bodyBox = self.get_content_area()
@@ -488,11 +556,17 @@ class TrayIcon:
                 image.set_from_stock(Gtk.STOCK_DIRECTORY, 1)
                 item.set_image(image)
                 submenu = Gtk.Menu()
-                for noteName in Notes.sections():
-                    if Notes[noteName]['group'] == groupName:
-                        makeNoteItem(noteName)
-                        submenu.append(self.noteItems[0])
+                for noteName in membersOfGroup(groupName):
+                    makeNoteItem(noteName)
+                    submenu.append(self.noteItems[0])
+                sep = Gtk.SeparatorMenuItem()
+                submenu.append(sep)
                 editGroupButton = Gtk.MenuItem(Soundboard['EditGroup'])
+                editGroupButton.connect( \
+                    'activate',
+                    lambda _, gN: Notes.editGroup(gN),
+                    groupName
+                )
                 submenu.append(editGroupButton)
                 item.set_submenu(submenu)
                 menu.append(item)
@@ -555,6 +629,12 @@ class TrayIcon:
         window.destroy()
 
     def stop(self):
+        if Config.getboolean('general', '_bool_confirm_quit'):
+            window = BooleanWindow('quit', Config['general']['app_name'])
+            ch = window.run()
+            if ch == Gtk.ResponseType.CANCEL:
+                window.destroy()
+                return
         Gtk.main_quit()
 
 
@@ -580,6 +660,12 @@ def makeDisplayKey(key):
         return key.title()
     return key
 
+def membersOfGroup(name):
+    return [note for note in Notes.sections() if Notes[note]['group'] == name]
+
+def notMembersOfGroup(name):
+    return [note for note in Notes.sections() if Notes[note]['group'] != name]
+
 def currentTime():
     current_time = datetime.datetime.now()
     return (
@@ -589,6 +675,11 @@ def currentTime():
                                 current_time.hour,
                                 current_time.minute)
             )
+
+def minorError():
+    print("\n%s" % Soundboard['MinorError'])
+    import traceback
+    traceback.print_exc()
 
 # Main
 def main():
@@ -603,5 +694,5 @@ if __name__ == "__main__":
     try:
         Tray = TrayIcon()
     except AttributeError as e:
-        print("Error creating Tray Icon\n%s" % e); quit(1)
+        minorError()
     main()
