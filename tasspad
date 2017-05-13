@@ -23,7 +23,6 @@ Designed to sit in a system tray / notification area
 #
 #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
 # FIX: make quit button send signal to close all windows
-# TODO: sanitize textual input
 # TODO: nags and tags
 
 import gi
@@ -72,14 +71,13 @@ ConfigPath = makeConfigPath()
 SrcPath = makeSrcPath()
 Tray = None
 
-
 #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
 # Parsers
 #
 #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
 class _ConfigParser(configparser.ConfigParser):
     def __init__(self, path, defaults):
-        super().__init__()
+        super().__init__(interpolation=None)
         self.path = path
         # make a new default file if none exists
         if not os.path.exists(path):
@@ -127,6 +125,8 @@ class ConfParser(_ConfigParser):
                         'Preferences' : 'Preferences',
                         'Quit' : 'Quit',
                         'Edit' : 'Edit',
+                        'Delete' : 'Delete',
+                        'Execute' : 'Execute',
                         'BooleanPrompt' : 'Really',
                         'OutsideGroupHeader' : 'Other Notes',
                         'InsideGroupHeader' : 'Notes In This Group',
@@ -139,7 +139,8 @@ cause problems if used incorrectly.''',
                         'WelcomeMessage' : \
 '''Left click will delete notes by default, right-click will
 bring up the edit window. From here the note can be
-complicated with tweaks.''',
+complicated with tweaks. Use Alt+A to apply your
+changes.''',
                         'IconWarning' : \
 '''must be restarted for icon changes to take effect.''',
                     }
@@ -269,7 +270,7 @@ class NotesParser(_ConfigParser):
             title = self[notename]['title']
             if len(self[notename]['title']) > 29:
                 title = "%s..." % self[notename]['title'][:30]
-            window = BooleanWindow('delete', '"%s"' % title)
+            window = BooleanWindow(Soundboard['Delete'], '"%s"' % title)
             ch = window.run()
             if ch == Gtk.ResponseType.OK:
                 do()
@@ -293,11 +294,11 @@ class _Dialog(Gtk.Dialog):
 
     def addApplyButtons(self):
         if Config.getboolean('general','_bool_apply/close_swap'):
-            self.add_buttons(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE,
-                             Gtk.STOCK_APPLY, Gtk.ResponseType.APPLY)
+            closeButton = self.add_button(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+            applyButton = self.add_button(Gtk.STOCK_APPLY, Gtk.ResponseType.APPLY)
         else:
-            self.add_buttons(Gtk.STOCK_APPLY, Gtk.ResponseType.APPLY,
-                             Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+            applyButton = self.add_button(Gtk.STOCK_APPLY, Gtk.ResponseType.APPLY)
+            closebutton = self.add_button(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
 
 class NewNoteWindow(_Dialog):
     def __init__(self, text):
@@ -407,7 +408,7 @@ class EditWindow(_Dialog):
 class BooleanWindow(_Dialog):
     def __init__(self, action, thing):
         super().__init__()
-        label = "%s %s %s?" % (Soundboard['BooleanPrompt'], action, thing)
+        label = "%s %s %s?" % (Soundboard['BooleanPrompt'], action.lower(), thing)
 
         # construct content area
         self.bodyBox = self.get_content_area()
@@ -457,17 +458,13 @@ class TrayIcon:
     def buildMenu(self):
         def leftClickAction(noteName):
             if Notes.getboolean(noteName, '_bool_execute'):
-                def do():
-                    call('(%s &)' % Notes[noteName]['body'], shell=True)
-                confirmExecute = Config.getboolean('general', '_bool_confirm_execute')
-                if confirmExecute:
-                    window = BooleanWindow('execute', '"%s"' % Notes[noteName]['body'])
+                if Config.getboolean('general', '_bool_confirm_execute'):
+                    window = BooleanWindow(Soundboard['Execute'], '"%s"' % Notes[noteName]['body'])
                     ch = window.run()
-                    if ch == Gtk.ResponseType.OK:
-                        do()
-                    window.destroy()
-                else:
-                    do()
+                    if ch == Gtk.ResponseType.CANCEL:
+                        window.destroy()
+                        return
+                call('(%s &)' % Notes[noteName]['body'], shell=True)
             else:
                 Notes.delete(noteName)
 
@@ -630,7 +627,7 @@ class TrayIcon:
 
     def stop(self):
         if Config.getboolean('general', '_bool_confirm_quit'):
-            window = BooleanWindow('quit', Config['general']['app_name'])
+            window = BooleanWindow(Soundboard['Quit'], Config['general']['app_name'])
             ch = window.run()
             if ch == Gtk.ResponseType.CANCEL:
                 window.destroy()
@@ -643,6 +640,8 @@ class TrayIcon:
 #
 #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
 def makeDisplayKey(key):
+    if key in Soundboard:
+        return Soundboard[key]
     # remove underscored prefix from keyname
     if key.startswith('_'):
         prefixlen = key[1:].index('_') + 2
@@ -668,13 +667,7 @@ def notMembersOfGroup(name):
 
 def currentTime():
     current_time = datetime.datetime.now()
-    return (
-            "%s-%s-%s %s:%s" % (current_time.year,
-                                current_time.month,
-                                current_time.day,
-                                current_time.hour,
-                                current_time.minute)
-            )
+    return current_time.strftime("%Y %b %d %r")
 
 def minorError():
     print("\n%s" % Soundboard['MinorError'])
@@ -693,6 +686,6 @@ if __name__ == "__main__":
     Notes = NotesParser()
     try:
         Tray = TrayIcon()
-    except AttributeError as e:
+    except AttributeError:
         minorError()
     main()
