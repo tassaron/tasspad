@@ -23,6 +23,8 @@ Designed to sit in a system tray / notification area
 #
 #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
 # FIX: make quit button send signal to close all windows
+# TODO: sanitize textual input
+# TODO: nags and tags
 
 import gi
 gi.require_version('Gtk', '3.0')
@@ -75,7 +77,6 @@ class _ConfigParser(configparser.ConfigParser):
         self.path = path
         # make a new default file if none exists
         if not os.path.exists(path):
-
             _ = configparser.ConfigParser()
             for key, value in defaults.items():
                 _[key] = value
@@ -88,10 +89,10 @@ class _ConfigParser(configparser.ConfigParser):
         with open(self.path, 'w') as f:
             self.write(f)
         if Tray:
-            try:
-                Tray.createMenu()
-            except AttributeError as e:
-                print("Error creating Tray Icon, but file saved OK\n%s" % e)
+            #try:
+            Tray.createMenu()
+            #except AttributeError as e:
+            #    print("Error creating Tray Icon, but file saved OK\n%s" % e)
 
 
 class ConfParser(_ConfigParser):
@@ -110,9 +111,13 @@ class ConfParser(_ConfigParser):
                         '_bool_warn_when_editing' : 'true',
                         '_bool_click_submenus' : 'true',
                         },
-            'soundboard' : {
+         'soundboard' : {
                         'NewNote' : '[New Note]',
+                        'NewNoteLong' : 'New note: ',
                         'NewGroup' : '[New Group]',
+                        'NewGroupLong' : 'New group: ',
+                        'EditGroup' : 'Edit Group',
+                        'RemoveGroup' : 'Remove Group',
                         'Preferences' : 'Preferences',
                         'Quit' : 'Quit',
                         'Remove' : 'Remove',
@@ -120,7 +125,7 @@ class ConfParser(_ConfigParser):
                         'ExecuteWarning' : \
 '''The execute flag will cause this note to run the <b>body</b>
 field as a shell command when the note is clicked. This can
-easily cause problems if used incorrectly.''',
+cause problems if used incorrectly.''',
                         'WelcomeMessage' : \
 '''Left click will delete notes by default, right-click will
 bring up the edit window. From here the note can be
@@ -167,6 +172,8 @@ class NotesParser(_ConfigParser):
                         },
             }
         super().__init__(path, defaults)
+        self.groups = None
+        self.save()
 
     def uniqueName(self):
         while True:
@@ -177,7 +184,7 @@ class NotesParser(_ConfigParser):
         return pname
 
     def new(self):
-        window = NewNoteWindow()
+        window = NewNoteWindow(Soundboard['NewNoteLong'])
         ch = window.run()
         if ch == Gtk.ResponseType.APPLY:
             newname = self.uniqueName()
@@ -186,10 +193,21 @@ class NotesParser(_ConfigParser):
             self.save()
         window.destroy()
 
-    def edit(self, notename):
-        window = EditWindow(self[notename])
+    def newGroup(self):
+        window = NewNoteWindow(Soundboard['NewGroupLong'])
         ch = window.run()
         if ch == Gtk.ResponseType.APPLY:
+            self.groups.add_section(window.entry.get_text())
+            self.save()
+        window.destroy()
+
+    def edit(self, notename):
+        window = EditWindow(self[notename], showDelete=True)
+        ch = window.run()
+        if ch == Gtk.ResponseType.CANCEL:
+            # DELETE BUTTON
+            self.delete(notename)
+        elif ch == Gtk.ResponseType.APPLY:
             for key in self[notename]:
                 edited = False
                 if key in window.fields:
@@ -212,6 +230,19 @@ class NotesParser(_ConfigParser):
             self[notename]['_nomodify_time_modified'] = currentTime()
             self.save()
         window.destroy()
+
+    def registerGroups(self):
+        if Config.getboolean('general','_bool_show_groups'):
+            if not self.groups:
+                self.groups = configparser.ConfigParser()
+            for noteName in self.sections():
+                if self[noteName]['group'] \
+                    and self[noteName]['group'] not in self.groups.sections():
+                    self.groups.add_section(self[noteName]['group'])
+
+    def save(self):
+        self.registerGroups()
+        super().save()
 
     def delete(self, notename):
         def do():
@@ -245,14 +276,14 @@ class _Dialog(Gtk.Dialog):
         self.set_border_width(8)
 
 class NewNoteWindow(_Dialog):
-    def __init__(self):
+    def __init__(self, text):
         super().__init__()
 
         # construct content area
         self.entry = Gtk.Entry()
         self.entry.set_activates_default(True)
         self.bodyBox = self.get_content_area()
-        self.bodyBox.pack_start(Gtk.Label("New note: "), False, False, 0)
+        self.bodyBox.pack_start(Gtk.Label(text), False, False, 0)
         self.bodyBox.pack_start(self.entry, False, False, 0)
         # construct action area
         if Config.getboolean('general', '_bool_add/cancel_swap'):
@@ -267,7 +298,7 @@ class NewNoteWindow(_Dialog):
         self.show_all()
 
 class EditWindow(_Dialog):
-    def __init__(self, section):
+    def __init__(self, section, showDelete=False):
         super().__init__()
 
         box = self.get_content_area()
@@ -295,12 +326,14 @@ class EditWindow(_Dialog):
                 field.pack_end(entry, False, False, 0)
                 self.fields[key] = entry
             box.pack_start(field, False, False, 0)
+        if showDelete:
+            self.add_button(Gtk.STOCK_DELETE, Gtk.ResponseType.CANCEL)
         if Config.getboolean('general','_bool_apply/close_swap'):
-            self.add_buttons(Gtk.STOCK_CLOSE, Gtk.ResponseType.CANCEL,
+            self.add_buttons(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE,
                              Gtk.STOCK_APPLY, Gtk.ResponseType.APPLY)
         else:
             self.add_buttons(Gtk.STOCK_APPLY, Gtk.ResponseType.APPLY,
-                             Gtk.STOCK_CLOSE, Gtk.ResponseType.CANCEL)
+                             Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
         self.show_all()
 
 class BooleanWindow(_Dialog):
@@ -354,45 +387,26 @@ class TrayIcon:
         self.indicator.set_menu(self.buildMenu())
 
     def buildMenu(self):
-        menu = Gtk.Menu()
-        # NEW NOTE BUTTON
-        newNoteItem = Gtk.ImageMenuItem(Soundboard['NewNote'])
-        img = Gtk.Image()
-        img.set_from_stock(Gtk.STOCK_NEW,1)
-        newNoteItem.set_image(img)
-        newNoteItem.connect('activate', lambda _: Notes.new())
-        menu.append(newNoteItem)
-        if Config.getboolean('general','_bool_show_groups'):
-            newGroupItem = Gtk.ImageMenuItem(Soundboard['NewGroup'])
-            img = Gtk.Image(); img.set_from_stock(Gtk.STOCK_INDEX, 1)
-            newGroupItem.set_image(img)
-            newGroupItem.connect('activate', lambda _: Notes.new())
-            menu.append(newGroupItem)
-        self.noteItems = []
-        # LIST OF NOTES
-        for noteName in Notes.sections():
-            def leftClickAction(noteName):
-                if Notes.getboolean(noteName, '_bool_execute'):
-                    def do():
-                        call('(%s &)' % Notes[noteName]['body'], shell=True)
-                    confirmExecute = Config.getboolean('general', '_bool_confirm_execute')
-                    if confirmExecute:
-                        window = BooleanWindow('execute', '"%s"' % Notes[noteName]['body'])
-                        ch = window.run()
-                        if ch == Gtk.ResponseType.OK:
-                            do()
-                        window.destroy()
-                    else:
+        def leftClickAction(noteName):
+            if Notes.getboolean(noteName, '_bool_execute'):
+                def do():
+                    call('(%s &)' % Notes[noteName]['body'], shell=True)
+                confirmExecute = Config.getboolean('general', '_bool_confirm_execute')
+                if confirmExecute:
+                    window = BooleanWindow('execute', '"%s"' % Notes[noteName]['body'])
+                    ch = window.run()
+                    if ch == Gtk.ResponseType.OK:
                         do()
+                    window.destroy()
                 else:
-                    Notes.delete(noteName)
+                    do()
+            else:
+                Notes.delete(noteName)
 
-            def rightClickAction(noteName):
-                Notes.edit(noteName)
+        def rightClickAction(noteName):
+            Notes.edit(noteName)
 
-            if noteName == 'DEFAULT':
-                continue
-            # make a primary menu item for this note...
+        def makeNoteItem(noteName):
             titlelines = wrap(Notes[noteName]['title'],
                               int(Config['general']['_num_menu_width']))
             if Notes[noteName]['icon']:
@@ -408,17 +422,11 @@ class TrayIcon:
                     item.set_image(img)
                 else:
                     item = Gtk.MenuItem("\n".join(line for line in titlelines))
-            self.noteItems.insert(0, item)
 
+            self.noteItems.insert(0, item)
             if Notes[noteName]['body'] and not Notes.getboolean(noteName, '_bool_execute'):
                 # make a submenu for the note's body...
                 submenu = Gtk.Menu()
-                removeButton = Gtk.MenuItem(Soundboard['Remove'])
-                removeButton.connect(
-                    'activate',
-                    lambda _, section: leftClickAction(section),
-                    noteName
-                )
                 editButton = Gtk.MenuItem(Soundboard['Edit'])
                 editButton.connect(
                     'activate',
@@ -432,7 +440,6 @@ class TrayIcon:
                     submenu.append(Gtk.MenuItem(line))
                 sep = Gtk.SeparatorMenuItem()
                 submenu.append(sep)
-                submenu.append(removeButton)
                 submenu.append(editButton)
                 self.noteItems[0].set_submenu(submenu)
                 event = 'button-press-event'
@@ -455,8 +462,51 @@ class TrayIcon:
                     lambda _, section: leftClickAction(section),
                     noteName
                 )
-            # add mainmenu item to mainmenu
+
+        self.noteItems = []
+        menu = Gtk.Menu()
+        # NEW NOTE BUTTON
+        newNoteItem = Gtk.ImageMenuItem(Soundboard['NewNote'])
+        img = Gtk.Image()
+        img.set_from_stock(Gtk.STOCK_NEW,1)
+        newNoteItem.set_image(img)
+        newNoteItem.connect('activate', lambda _: Notes.new())
+        menu.append(newNoteItem)
+        # NEW GROUP BUTTON
+        showGroups = False
+        if Config.getboolean('general','_bool_show_groups'):
+            showGroups = True
+            newGroupItem = Gtk.ImageMenuItem(Soundboard['NewGroup'])
+            img = Gtk.Image(); img.set_from_stock(Gtk.STOCK_INDEX, 1)
+            newGroupItem.set_image(img)
+            newGroupItem.connect('activate', lambda _: Notes.newGroup())
+            menu.append(newGroupItem)
+            # LIST OF GROUPS
+            for groupName in Notes.groups.sections():
+                item = Gtk.ImageMenuItem(groupName)
+                image = Gtk.Image()
+                image.set_from_stock(Gtk.STOCK_DIRECTORY, 1)
+                item.set_image(image)
+                submenu = Gtk.Menu()
+                for noteName in Notes.sections():
+                    if Notes[noteName]['group'] == groupName:
+                        makeNoteItem(noteName)
+                        submenu.append(self.noteItems[0])
+                editGroupButton = Gtk.MenuItem(Soundboard['EditGroup'])
+                submenu.append(editGroupButton)
+                item.set_submenu(submenu)
+                menu.append(item)
+        # LIST OF NOTES
+        for noteName in Notes.sections():
+            if noteName == 'DEFAULT':
+                continue
+            if showGroups and Notes[noteName]['group']:
+                continue
+            # make a menu item for this note...
+            makeNoteItem(noteName)
+            # add this item to the main menu
             menu.append(self.noteItems[0])
+
         # END OF MENU
         menuSep = Gtk.SeparatorMenuItem()
         menu.append(menuSep)
@@ -500,8 +550,8 @@ class TrayIcon:
                             Soundboard['IconWarning']
                             )
                         )
+            Notes.registerGroups()
             Config.save()
-
         window.destroy()
 
     def stop(self):
