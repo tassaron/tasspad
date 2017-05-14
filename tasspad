@@ -117,9 +117,10 @@ class ConfParser(_ConfigParser):
                         '_bool_click_submenus' : 'true',
                         },
          'soundboard' : {
-                        'NewNote' : '[New Note]',
+                        'New' : 'New',
+                        'NewNote' : 'New Note',
                         'NewNoteLong' : 'New note: ',
-                        'NewGroup' : '[New Group]',
+                        'NewGroup' : 'New Group',
                         'NewGroupLong' : 'New group: ',
                         'EditGroup' : 'Edit Group',
                         'Preferences' : 'Preferences',
@@ -132,6 +133,9 @@ class ConfParser(_ConfigParser):
                         'InsideGroupHeader' : 'Notes In This Group',
                         'MinorError' : \
 'Oh no! Couldn\'t create Tray Icon, but file saved OK.',
+                        'BadIconPath' : \
+'''does not have permission or the filepath doesn't
+exist. A system default icon will be used instead.''',
                         'ExecuteWarning' : \
 '''The execute flag will cause this note to run the <b>body</b>
 field as a shell command when the note is clicked. This can
@@ -234,7 +238,7 @@ class NotesParser(_ConfigParser):
                         self[notename][key] = 'true'
                     else:
                         self[notename][key] = 'false'
-                # gives any warnings as necessary
+                # give any warnings as necessary
                 if Config.getboolean('general', '_bool_warn_when_editing'):
                     if edited and key == '_bool_execute' \
                         and self.getboolean(notename, '_bool_execute'):
@@ -286,6 +290,7 @@ class NotesParser(_ConfigParser):
 class _Dialog(Gtk.Dialog):
     def __init__(self):
         super().__init__(title=Config['general']['app_name'])
+        checkWindowIcon()
         if Config.getboolean('general', '_bool_use_system_icon'):
             self.set_icon_name('text-editor')
         else:
@@ -294,11 +299,12 @@ class _Dialog(Gtk.Dialog):
 
     def addApplyButtons(self):
         if Config.getboolean('general','_bool_apply/close_swap'):
-            closeButton = self.add_button(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
-            applyButton = self.add_button(Gtk.STOCK_APPLY, Gtk.ResponseType.APPLY)
-        else:
             applyButton = self.add_button(Gtk.STOCK_APPLY, Gtk.ResponseType.APPLY)
             closebutton = self.add_button(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+        else:
+            closeButton = self.add_button(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+            applyButton = self.add_button(Gtk.STOCK_APPLY, Gtk.ResponseType.APPLY)
+
 
 class NewNoteWindow(_Dialog):
     def __init__(self, text):
@@ -425,14 +431,12 @@ class BooleanWindow(_Dialog):
 class MessageWindow(_Dialog):
     def __init__(self, text):
         super().__init__()
-        self.bodyBox = self.get_content_area()
+        self.text = text
+        body = self.get_content_area()
         label = Gtk.Label()
         label.set_markup(str(text))
-        self.bodyBox.pack_start(label, False, False, 0)
+        body.pack_start(label, False, False, 0)
         self.add_button(Gtk.STOCK_OK, Gtk.ResponseType.OK)
-        self.show_all()
-        self.run()
-        self.destroy()
 
 #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
 # Greebles
@@ -440,6 +444,7 @@ class MessageWindow(_Dialog):
 #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
 class TrayIcon:
     def __init__(self):
+        checkWindowIcon()
         if Config.getboolean('general', '_bool_use_system_icon'):
             # Use the system icon instead of a custom path
             self.indicator = AppIndicator3.Indicator.new(
@@ -453,6 +458,7 @@ class TrayIcon:
         self.createMenu()
 
     def createMenu(self):
+        # TODO: allow hiding preferences and access them by right-clicking tray
         self.indicator.set_menu(self.buildMenu())
 
     def buildMenu(self):
@@ -472,8 +478,10 @@ class TrayIcon:
             Notes.edit(noteName)
 
         def makeNoteItem(noteName):
+            # items for the notes themselves
             titlelines = wrap(Notes[noteName]['title'],
                               int(Config['general']['_num_menu_width']))
+            checkNoteIcon(noteName)
             if Notes[noteName]['icon']:
                 item = Gtk.ImageMenuItem("\n".join(line for line in titlelines))
                 image = Gtk.Image()
@@ -511,8 +519,8 @@ class TrayIcon:
             else:
                 submenu = False
                 event = 'button-release-event'
-            if submenu and Config.getboolean('general', '_bool_click_submenus')\
-                or not submenu:
+            # TODO:right-click groups and bodies to edit them too
+            if submenu and Config.getboolean('general', '_bool_click_submenus'):
                 # bind left and right click to appropriate actions
                 self.noteItems[0].connect(
                     event,
@@ -521,31 +529,65 @@ class TrayIcon:
                         else rightClickAction(section),
                     noteName
                 )
-            if not submenu:
+            elif not submenu:
+                self.noteItems[0].connect(
+                    event,
+                    lambda _, k, section: \
+                        rightClickAction(section) if k.button == 3 \
+                        else bool(),
+                    noteName
+                )
                 self.noteItems[0].connect(
                     'activate',
                     lambda _, section: leftClickAction(section),
                     noteName
                 )
 
-        self.noteItems = []
-        menu = Gtk.Menu()
-        # NEW NOTE BUTTON
-        newNoteItem = Gtk.ImageMenuItem(Soundboard['NewNote'])
-        img = Gtk.Image()
-        img.set_from_stock(Gtk.STOCK_NEW,1)
-        newNoteItem.set_image(img)
-        newNoteItem.connect('activate', lambda _: Notes.new())
-        menu.append(newNoteItem)
-        # NEW GROUP BUTTON
-        showGroups = False
-        if Config.getboolean('general','_bool_show_groups'):
-            showGroups = True
+        def makeNewNoteItem():
+            # the item which says "New Note"
+            newNoteItem = Gtk.ImageMenuItem(Soundboard['NewNote'])
+            newNoteItem.connect('activate', lambda _: Notes.new())
+            return newNoteItem
+
+        def makeNewGroupItem():
             newGroupItem = Gtk.ImageMenuItem(Soundboard['NewGroup'])
             img = Gtk.Image(); img.set_from_stock(Gtk.STOCK_INDEX, 1)
             newGroupItem.set_image(img)
             newGroupItem.connect('activate', lambda _: Notes.newGroup())
-            menu.append(newGroupItem)
+            return newGroupItem
+
+        def makeTheNewButtons():
+            # NEW NOTE BUTTON
+            newNoteItem = makeNewNoteItem()
+            img = Gtk.Image()
+            img.set_from_stock(Gtk.STOCK_NEW,1)
+            if not showGroups:
+                newNoteItem.set_image(img)
+                menu.append(newNoteItem)
+            else:
+                # NEW... submenu hook
+                newFolder = Gtk.ImageMenuItem(Soundboard['New'])
+                newFolder.set_image(img)
+                newSubmenu = Gtk.Menu()
+                # NEW GROUP BUTTON
+                newGroupItem = makeNewGroupItem()
+                newSubmenu.append(newNoteItem)
+                newSubmenu.append(newGroupItem)
+                newFolder.set_submenu(newSubmenu)
+                menu.append(newFolder)
+
+        def separator():
+            if len(Notes.sections()) > 1:
+                menuSep = Gtk.SeparatorMenuItem()
+                menu.append(menuSep)
+
+        self.noteItems = []
+        menu = Gtk.Menu()
+        showGroups = Config.getboolean('general','_bool_show_groups')
+
+        makeTheNewButtons()
+        separator()
+        if showGroups:
             # LIST OF GROUPS
             for groupName in Notes.groups.sections():
                 item = Gtk.ImageMenuItem(groupName)
@@ -567,6 +609,7 @@ class TrayIcon:
                 submenu.append(editGroupButton)
                 item.set_submenu(submenu)
                 menu.append(item)
+
         # LIST OF NOTES
         for noteName in Notes.sections():
             if noteName == 'DEFAULT':
@@ -579,8 +622,9 @@ class TrayIcon:
             menu.append(self.noteItems[0])
 
         # END OF MENU
-        menuSep = Gtk.SeparatorMenuItem()
-        menu.append(menuSep)
+        if len(Notes.sections()) > 1:
+            menuSep = Gtk.SeparatorMenuItem()
+            menu.append(menuSep)
         prefsItem = Gtk.ImageMenuItem(Soundboard['Preferences'])
         img = Gtk.Image(); img.set_from_stock(Gtk.STOCK_PREFERENCES,1)
         prefsItem.set_image(img)
@@ -598,8 +642,15 @@ class TrayIcon:
         window = EditWindow(Config['general'])
         ch = window.run()
         if ch == Gtk.ResponseType.APPLY:
+            def isUnique(dialog):
+                '''tells if this is a duplicate message so we can nix it'''
+                for messagewindow in warnings:
+                    if messagewindow.text == dialog.text:
+                        return False
+                return True
+            warnings = []
             for key in Config['general']:
-                edited = False
+                edited = False; warning = None
                 if key in window.fields:
                     entrytext = window.fields[key].get_text()
                     if entrytext != Config['general'][key]:
@@ -613,14 +664,29 @@ class TrayIcon:
                         Config['general'][key] = 'true'
                     else:
                         Config['general'][key] = 'false'
-                # gives any warnings as necessary
+                # give any warnings as necessary
                 if Config.getboolean('general', '_bool_warn_when_editing'):
                     if edited and 'icon' in key:
-                        MessageWindow("%s %s" % (\
-                            Config['general']['app_name'],
-                            Soundboard['IconWarning']
+                        checkWindowIcon()
+                        if Config['general']['icon']:
+                            # must restart if you sent a new valid icon path
+                            warning = MessageWindow("%s %s" % (\
+                                Config['general']['app_name'],
+                                Soundboard['IconWarning']
+                                )
                             )
-                        )
+                        else:
+                            # warn user that the path is bogus
+                            warning = MessageWindow("%s %s" % (\
+                                Config['general']['app_name'],
+                                Soundboard['BadIconPath']
+                                )
+                            )
+                warnings.append(warning) if warning and isUnique(warning) else 0
+            for warning in warnings:
+                warning.show_all()
+                warning.run()
+                warning.destroy()
             Notes.registerGroups()
             Config.save()
         window.destroy()
@@ -664,6 +730,17 @@ def membersOfGroup(name):
 
 def notMembersOfGroup(name):
     return [note for note in Notes.sections() if Notes[note]['group'] != name]
+
+def checkNoteIcon(noteName):
+    global Notes
+    if not os.path.exists(Notes[noteName]['icon']):
+        Notes[noteName]['icon'] = ''
+
+def checkWindowIcon():
+    global Config
+    if not os.path.exists(Config['general']['icon']):
+        Config['general']['icon'] = ''
+        Config['general']['_bool_use_system_icon'] = 'true'
 
 def currentTime():
     current_time = datetime.datetime.now()
