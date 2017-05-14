@@ -75,13 +75,18 @@ Tray = None
 # Parsers
 #
 #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
-class _ConfigParser(configparser.ConfigParser):
-    def __init__(self, path, defaults):
+class ConfigParser(configparser.ConfigParser):
+    def __init__(self):
         super().__init__(interpolation=None)
+        self.optionxform = str
+
+class SavableConfigParser(ConfigParser):
+    def __init__(self, path, defaults):
+        super().__init__()
         self.path = path
         # make a new default file if none exists
         if not os.path.exists(path):
-            _ = configparser.ConfigParser()
+            _ = ConfigParser()
             for key, value in defaults.items():
                 _[key] = value
             with open(path, 'w') as f:
@@ -99,7 +104,7 @@ class _ConfigParser(configparser.ConfigParser):
                 minorError()
 
 
-class ConfParser(_ConfigParser):
+class ConfParser(SavableConfigParser):
     def __init__(self, path=os.path.join(ConfigPath, 'conf.conf')):
         defaults =  {
             'general' : {
@@ -108,7 +113,7 @@ class ConfParser(_ConfigParser):
                         '_bool_use_system_icon' : 'true',
                         '_num_menu_width' : '29',
                         '_bool_add/cancel_swap' : 'false',
-                        '_bool_apply/close_swap' : 'false',
+                        '_bool_apply/cancel_swap' : 'false',
                         '_bool_show_groups' : 'false',
                         '_bool_confirm_delete' : 'true',
                         '_bool_confirm_quit' : 'false',
@@ -158,9 +163,14 @@ changes.''',
                 if key in self[section]:
                     continue
                 self[section][key] = value
-                self.save()
+        # remove keys that no longer exist in this version
+        for section in self.sections():
+            for key in self[section]:
+                if key not in defaults[section]:
+                    self[section].pop(key)
+        self.save()
 
-class NotesParser(_ConfigParser):
+class NotesParser(SavableConfigParser):
     def __init__(self, path=os.path.join(ConfigPath, 'notes.conf')):
         if call("which zenity > /dev/null", shell=True) == 0:
             welcomeExecute = 'true'
@@ -255,7 +265,7 @@ class NotesParser(_ConfigParser):
     def registerGroups(self):
         if Config.getboolean('general','_bool_show_groups'):
             if not self.groups:
-                self.groups = configparser.ConfigParser()
+                self.groups = ConfigParser()
             for noteName in self.sections():
                 if self[noteName]['group'] \
                     and self[noteName]['group'] not in self.groups.sections():
@@ -298,11 +308,11 @@ class _Dialog(Gtk.Dialog):
         self.set_border_width(8)
 
     def addApplyButtons(self):
-        if Config.getboolean('general','_bool_apply/close_swap'):
+        if Config.getboolean('general','_bool_apply/cancel_swap'):
             applyButton = self.add_button(Gtk.STOCK_APPLY, Gtk.ResponseType.APPLY)
-            closebutton = self.add_button(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+            closebutton = self.add_button(Gtk.STOCK_CANCEL, Gtk.ResponseType.CLOSE)
         else:
-            closeButton = self.add_button(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+            closeButton = self.add_button(Gtk.STOCK_CANCEL, Gtk.ResponseType.CLOSE)
             applyButton = self.add_button(Gtk.STOCK_APPLY, Gtk.ResponseType.APPLY)
 
 
