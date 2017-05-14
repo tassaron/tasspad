@@ -4,3 +4,5 @@ a flexible to-do list that lets you quickly jot things down, and organize them l
 left-click to remove a note you've added, right click to make that note more complicated
 
 written for Python 3.4+ and Gtk+ 3. currently very unfinished.
+
+![Screenshot](/screenshot.png?raw=true)
