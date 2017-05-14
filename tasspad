@@ -326,6 +326,7 @@ class NotesParser(SavableConfigParser):
 class Dialog(Gtk.Dialog):
     def __init__(self):
         super().__init__(title=Config['general']['app_name'])
+        self.connect('delete-event', lambda _, __: self.destroy())
         checkWindowIcon()
         if Config.getboolean('general', '_bool_use_system_icon'):
             self.set_icon_name('text-editor')
@@ -368,6 +369,7 @@ class EditGroupWindow(Dialog):
         def makeListBoxes():
             # list of notes outside this group...
             self.outsiderBox = Gtk.ListBox()
+            self.outsiderBox.set_size_request(200,200)
             self.outsiderBox.connect('row-activated', lambda _, row: self.outSelect(row))
             for notename in self.outsiders:
                 row = Gtk.ListBoxRow()
@@ -375,6 +377,7 @@ class EditGroupWindow(Dialog):
                 self.outsiderBox.add(row)
             # list of notes in this group
             self.insiderBox = Gtk.ListBox()
+            self.insiderBox.set_size_request(200,200)
             self.insiderBox.connect('row-activated', lambda _, row: self.inSelect(row))
             for notename in self.insiders:
                 row = Gtk.ListBoxRow()
@@ -413,6 +416,7 @@ class EditGroupWindow(Dialog):
         inToOutButton.set_size_request(48,48)
         inToOutButton.connect('clicked', lambda _: self.inToOut())
         outToInButton = Gtk.Button(">")
+        outToInButton.set_size_request(48,48)
         outToInButton.connect('clicked', lambda _: self.outToIn())
         betweenBox.pack_start(inToOutButton, True, True, 20)
         betweenBox.pack_start(outToInButton, True, True, 20)
@@ -455,7 +459,7 @@ class EditGroupWindow(Dialog):
 class EditWindow(Dialog):
     def __init__(self, section, showDelete=False):
         super().__init__()
-
+        self.set_size_request(350,175)
         box = self.get_content_area()
         box.set_orientation(Gtk.Orientation.VERTICAL)
         self.fields = {}
