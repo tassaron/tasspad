@@ -24,6 +24,7 @@ Designed to sit in a system tray / notification area
 #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~==~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~#
 # FIX: make quit button send signal to close all windows
 # EVENTUALLY: nags to change the tray icon at a certain time & remind you daily
+# TODO: dialog run loop to stop extra closing when cancelling
 
 import gi
 gi.require_version('Gtk', '3.0')
@@ -120,6 +121,7 @@ class ConfParser(SavableConfigParser):
                         '_bool_confirm_execute' : 'false',
                         '_bool_warn_when_editing' : 'true',
                         '_bool_click_submenus' : 'true',
+                        '_bool_give_all_notes_icons' : 'false',
                         },
          'soundboard' : {
                         'New' : 'New',
@@ -272,12 +274,17 @@ class NotesParser(SavableConfigParser):
                 self.groups.remove_section(groupname)
             self.save()
         elif ch == Gtk.ResponseType.CANCEL:
-            window2 = BooleanWindow( \
-                Soundboard['Delete'],
-                '"%s" %s' % (groupname, Soundboard['GroupContents'])
-            )
-            ch = window2.run()
-            if ch == Gtk.ResponseType.OK:
+            go = True
+            if window.insiders or Config.getboolean('general', '_bool_confirm_delete'):
+                window2 = BooleanWindow( \
+                    Soundboard['Delete'],
+                    '"%s" %s' % (groupname, Soundboard['GroupContents'])
+                )
+                ch2 = window2.run()
+                window2.destroy()
+                if ch2 == Gtk.ResponseType.CANCEL:
+                    go = False
+            if go:
                 for noteName in self.sections():
                     if noteName in window.insiders:
                         self.remove_section(noteName)
@@ -285,7 +292,6 @@ class NotesParser(SavableConfigParser):
                         self[noteName]['group'] = ''
                 self.groups.remove_section(groupname)
                 self.save()
-            window2.destroy()
         window.destroy()
 
     def registerGroups(self):
@@ -341,6 +347,7 @@ class Dialog(Gtk.Dialog):
         else:
             closeButton = self.add_button(Gtk.STOCK_CANCEL, Gtk.ResponseType.CLOSE)
             applyButton = self.add_button(Gtk.STOCK_APPLY, Gtk.ResponseType.APPLY)
+        return applyButton
 
 class NewWindow(Dialog):
     def __init__(self, text):
@@ -425,7 +432,13 @@ class EditGroupWindow(Dialog):
         bodyBox.pack_start(betweenBox, False, False, 4)
         bodyBox.pack_start(self.insiderBox, True, True, 20)
         self.add_button(Gtk.STOCK_DELETE, Gtk.ResponseType.CANCEL)
-        self.addApplyButtons()
+        applyButton = self.addApplyButtons()
+        applyButton.set_can_default(True)
+        self.set_default(applyButton)
+        # activate applyButton if enter key is pressed
+        self.connect(
+            'key-release-event',
+            lambda _, k: applyButton.activate() if k.keyval == 65293 else 0)
         self.show_all()
 
     def inToOut(self):
@@ -482,13 +495,16 @@ class EditWindow(Dialog):
             else:
                 entry = Gtk.Entry()
                 entry.set_text(value)
+                entry.set_activates_default(True)
                 field.pack_end(entry, False, False, 0)
                 self.fields[key] = entry
             box.pack_start(field, False, False, 0)
 
         if showDelete:
             self.add_button(Gtk.STOCK_DELETE, Gtk.ResponseType.CANCEL)
-        self.addApplyButtons()
+        applyButton = self.addApplyButtons()
+        applyButton.set_can_default(True)
+        self.set_default(applyButton)
         self.show_all()
 
 class BooleanWindow(Dialog):
@@ -538,7 +554,6 @@ class TrayIcon:
         self.createMenu()
 
     def createMenu(self):
-        # TODO: allow hiding preferences and access them by right-clicking tray
         self.indicator.set_menu(self.buildMenu())
 
     def buildMenu(self):
@@ -594,10 +609,9 @@ class TrayIcon:
                 item.set_image(image)
             else:
                 if Notes.getboolean(noteName, '_bool_execute'):
-                    item = Gtk.ImageMenuItem("\n".join(line for line in titlelines))
-                    img = Gtk.Image()
-                    img.set_from_stock(Gtk.STOCK_EXECUTE,1)
-                    item.set_image(img)
+                    item = makeStockIconItem(Gtk.STOCK_EXECUTE, titlelines)
+                elif Config.getboolean('general', '_bool_give_all_notes_icons'):
+                    item = makeStockIconItem(Gtk.STOCK_FILE, titlelines)
                 else:
                     item = Gtk.MenuItem("\n".join(line for line in titlelines))
 
@@ -605,7 +619,7 @@ class TrayIcon:
             if Notes[noteName]['body'] and not Notes.getboolean(noteName, '_bool_execute'):
                 # make a submenu for the note's body...
                 submenu = Gtk.Menu()
-                editButton = Gtk.MenuItem(Soundboard['Edit'])
+                editButton = makeStockIconItem(Gtk.STOCK_EDIT, Soundboard['Edit'])
                 editButton.connect(
                     'activate',
                     lambda _, section: Notes.edit(section),
@@ -664,6 +678,17 @@ class TrayIcon:
                 menuSep = Gtk.SeparatorMenuItem()
                 menu.append(menuSep)
 
+        def makeStockIconItem(stockIconName, title):
+            '''title can be one line as a string or multiple lines as a list'''
+            if type(title) == list:
+                item = Gtk.ImageMenuItem("\n".join(line for line in title))
+            else:
+                item = Gtk.ImageMenuItem(title)
+            img = Gtk.Image()
+            img.set_from_stock(stockIconName,1)
+            item.set_image(img)
+            return item
+
         self.noteItems = []
         menu = Gtk.Menu()
         showGroups = Config.getboolean('general','_bool_show_groups')
@@ -674,10 +699,7 @@ class TrayIcon:
             # LIST OF GROUPS
             for groupName in Notes.groups.sections():
                 groupSections = membersOfGroup(groupName)
-                item = Gtk.ImageMenuItem(groupName)
-                image = Gtk.Image()
-                image.set_from_stock(Gtk.STOCK_DIRECTORY, 1)
-                item.set_image(image)
+                item = makeStockIconItem(Gtk.STOCK_DIRECTORY, groupName)
                 submenu = Gtk.Menu()
                 for noteName in groupSections:
                     makeNoteItem(noteName)
@@ -685,7 +707,8 @@ class TrayIcon:
                 if len(groupSections) > 0:
                     sep = Gtk.SeparatorMenuItem()
                     submenu.append(sep)
-                editGroupButton = Gtk.MenuItem(Soundboard['EditGroup'])
+                editGroupButton = makeStockIconItem(Gtk.STOCK_EDIT,
+                    Soundboard['EditGroup'])
                 editGroupButton.connect( \
                     'activate',
                     lambda _, gN: Notes.editGroup(gN),
@@ -715,14 +738,10 @@ class TrayIcon:
 
         # END OF MENU
         separator()
-        prefsItem = Gtk.ImageMenuItem(Soundboard['Preferences'])
-        img = Gtk.Image(); img.set_from_stock(Gtk.STOCK_PREFERENCES,1)
-        prefsItem.set_image(img)
+        prefsItem = makeStockIconItem(Gtk.STOCK_PREFERENCES, Soundboard['Preferences'])
         prefsItem.connect('activate', lambda _: self.editPrefs())
         menu.append(prefsItem)
-        quitItem = Gtk.ImageMenuItem(Soundboard['Quit'])
-        img = Gtk.Image(); img.set_from_stock(Gtk.STOCK_CLOSE,1)
-        quitItem.set_image(img)
+        quitItem = makeStockIconItem(Gtk.STOCK_CLOSE, Soundboard['Quit'])
         quitItem.connect('activate', lambda _: self.stop())
         menu.append(quitItem)
         menu.show_all()
@@ -741,6 +760,7 @@ class TrayIcon:
             warnings = []
             for key in Config['general']:
                 edited = False; warning = None
+                # fields are Gtk.Entrys, checkboxes are Gtk.CheckButtons
                 if key in window.fields:
                     entrytext = window.fields[key].get_text()
                     if entrytext != Config['general'][key]:
@@ -756,17 +776,17 @@ class TrayIcon:
                         Config['general'][key] = 'false'
                 # give any warnings as necessary
                 if Config.getboolean('general', '_bool_warn_when_editing'):
-                    if edited and 'icon' in key:
+                    if edited and (key == 'icon' or 'system_icon' in key):
                         checkWindowIcon()
                         if Config['general']['icon']:
-                            # must restart if you sent a new valid icon path
+                            # tell user to restart if this is a valid icon path
                             warning = MessageWindow("%s %s" % (\
                                 Config['general']['app_name'],
                                 Soundboard['IconWarning']
                                 )
                             )
                         else:
-                            # warn user that the path is bogus
+                            # warn user that the icon path is bogus
                             warning = MessageWindow("%s %s" % (\
                                 Config['general']['app_name'],
                                 Soundboard['BadIconPath']
