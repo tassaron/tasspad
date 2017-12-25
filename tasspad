@@ -212,12 +212,30 @@ class NotesParser(SavableConfigParser):
         return pname
 
     def new(self):
+        '''
+        Add a new note
+        '''
         window = NewWindow(Soundboard['NewNoteLong'])
         ch = window.run()
         if ch == Gtk.ResponseType.APPLY:
             newname = self.uniqueName()
             self[newname]['title'] = window.entry.get_text()
             self[newname]['_nomodify_time_created'] = currentTime()
+            self.save()
+        window.destroy()
+
+    def newInGroup(self, groupName):
+        '''
+        Add a new note to a specific group, from the group's submenu
+        '''
+        window = NewWindow(Soundboard['NewNoteLong'])
+        ch = window.run()
+        if ch == Gtk.ResponseType.APPLY:
+            newname = self.uniqueName()
+            self[newname]['title'] = window.entry.get_text()
+            self[newname]['_nomodify_time_created'] = currentTime()
+            if groupName is not None:
+                self[newname]['group'] = groupName
             self.save()
         window.destroy()
 
@@ -350,7 +368,7 @@ class Dialog(Gtk.Dialog):
         return applyButton
 
 class NewWindow(Dialog):
-    def __init__(self, text):
+    def __init__(self, text, groupName=None):
         super().__init__()
 
         # construct content area
@@ -715,6 +733,14 @@ class TrayIcon:
                     groupName
                 )
                 submenu.append(editGroupButton)
+                newNoteButton = makeStockIconItem(Gtk.STOCK_NEW,
+                    Soundboard['NewNote'])
+                newNoteButton.connect( \
+                    'activate',
+                    lambda _, gN: Notes.newInGroup(gN),
+                    groupName
+                )
+                submenu.append(newNoteButton)
                 item.set_submenu(submenu)
                 if Config.getboolean('general', '_bool_click_submenus'):
                     item.connect(
